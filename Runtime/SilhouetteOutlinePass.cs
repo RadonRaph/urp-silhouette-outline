@@ -10,6 +10,7 @@ namespace SilhouetteOutline
     /// <summary>
     /// Silhouette, blur, cut and merge. The silhouettes are depth tested against a copy of the scene depth, so only
     /// the visible part of an outlined object produces an outline.
+    /// The blur radius is the outline width, so outlines are grouped by width and each group runs its own chain.
     /// With occlusion on, the silhouette depth is dilated along with the blur and the cut hides the outline wherever
     /// the scene is in front of it.
     /// </summary>
@@ -61,6 +62,7 @@ namespace SilhouetteOutline
             internal TextureHandle Mask;
             internal TextureHandle Depth;
             internal TextureHandle SceneDepth;
+            internal float KernelSize;
             internal Material Material;
             internal int Pass;
         }
@@ -72,12 +74,16 @@ namespace SilhouetteOutline
             public TextureHandle Depth;
             public TextureHandle SceneDepth;
             public TextureHandle DepthDestination;
+            public float KernelSize;
         }
 
         private readonly Material _silhouetteMaterial;
         private readonly Material _compositeMaterial;
 
-        private readonly List<DrawBatch> _batches = new List<DrawBatch>(64);
+        // One batch list per distinct width, plus every batch for the shared mask when there are several widths.
+        private readonly List<float> _widths = new List<float>(4);
+        private readonly List<List<DrawBatch>> _groups = new List<List<DrawBatch>>(4);
+        private readonly List<DrawBatch> _allBatches = new List<DrawBatch>(64);
         private readonly List<Vector4> _colors = new List<Vector4>(128);
         private readonly Matrix4x4[] _scratch = new Matrix4x4[MAX_INSTANCES_PER_DRAW];
 
@@ -121,7 +127,7 @@ namespace SilhouetteOutline
             UploadColors();
 
             // Built from the camera target so XR keeps its texture array and eye count.
-            var desc = new TextureDesc(cameraData.cameraTargetDescriptor)
+            var colorDesc = new TextureDesc(cameraData.cameraTargetDescriptor)
             {
                 msaaSamples = MSAASamples.None,
                 bindTextureMS = false,
@@ -133,68 +139,104 @@ namespace SilhouetteOutline
                 filterMode = FilterMode.Point,
                 wrapMode = TextureWrapMode.Clamp,
                 format = SystemInfo.GetGraphicsFormat(DefaultFormat.LDR),
-                clearBuffer = true,
-                clearColor = Color.clear,
-                name = "SilhouetteOutline_Mask",
+                clearBuffer = false,
             };
-            TextureHandle mask = renderGraph.CreateTexture(desc);
 
-            desc.clearBuffer = false;
-            desc.name = "SilhouetteOutline_BlurA";
-            TextureHandle blurA = renderGraph.CreateTexture(desc);
-            desc.name = "SilhouetteOutline_BlurB";
-            TextureHandle blurB = renderGraph.CreateTexture(desc);
+            var depthDesc = colorDesc;
+            depthDesc.format = GetDepthFormat();
+            depthDesc.name = "SilhouetteOutline_Depth";
+            TextureHandle depth = renderGraph.CreateTexture(depthDesc);
 
             bool occlude = _settings.OccludeOutline;
-            TextureHandle depthMask = default;
-            TextureHandle depthA = default;
-            TextureHandle depthB = default;
+            var silhouetteDepthDesc = colorDesc;
+            silhouetteDepthDesc.format = GetSilhouetteDepthFormat();
 
-            if (occlude)
-            {
-                // Raw device depth of the silhouettes, cleared to the far plane where there is none.
-                float far = SystemInfo.usesReversedZBuffer ? 0f : 1f;
-
-                desc.format = GetSilhouetteDepthFormat();
-                desc.clearBuffer = true;
-                desc.clearColor = new Color(far, far, far, far);
-                desc.name = "SilhouetteOutline_DepthMask";
-                depthMask = renderGraph.CreateTexture(desc);
-
-                desc.clearBuffer = false;
-                desc.name = "SilhouetteOutline_DepthA";
-                depthA = renderGraph.CreateTexture(desc);
-                desc.name = "SilhouetteOutline_DepthB";
-                depthB = renderGraph.CreateTexture(desc);
-            }
-
-            // Fully overwritten by the copy below.
-            desc.format = GetDepthFormat();
-            desc.clearBuffer = false;
-            desc.name = "SilhouetteOutline_Depth";
-            TextureHandle depth = renderGraph.CreateTexture(desc);
-
-            AddCopyDepthPass(renderGraph, sceneDepth, depth);
-            AddSilhouettePass(renderGraph, mask, depthMask, depth);
-
-            _compositeMaterial.SetFloat(KernelSizeId, _settings.BlurRange);
             _compositeMaterial.SetFloat(OcclusionToleranceId, Mathf.Max(_settings.OcclusionTolerance, 0.001f));
 
-            AddBlitPass(renderGraph, "SilhouetteOutline_BlurVertical", mask, blurA, PASS_BLUR_VERTICAL,
-                new BlitTargets { Depth = depthMask, DepthDestination = depthA });
+            AddCopyDepthPass(renderGraph, sceneDepth, depth);
 
-            AddBlitPass(renderGraph, "SilhouetteOutline_BlurHorizontal", blurA, blurB, PASS_BLUR_HORIZONTAL,
-                new BlitTargets { Depth = depthA, DepthDestination = depthB });
+            // With several widths the cut uses a mask of every outlined object, so no ring is drawn over another one.
+            TextureHandle sharedMask = TextureHandle.nullHandle;
+            if (_widths.Count > 1)
+            {
+                sharedMask = CreateMask(renderGraph, colorDesc, "SilhouetteOutline_SharedMask");
+                TextureHandle sharedDepthMask = occlude ? CreateSilhouetteDepth(renderGraph, silhouetteDepthDesc, "SilhouetteOutline_SharedDepthMask") : TextureHandle.nullHandle;
+                AddSilhouettePass(renderGraph, _allBatches, sharedMask, sharedDepthMask, depth);
+            }
 
-            AddBlitPass(renderGraph, "SilhouetteOutline_Cut", blurB, blurA, PASS_CUT,
-                new BlitTargets { Mask = mask, Depth = depthB, SceneDepth = occlude ? sceneDepth : TextureHandle.nullHandle });
+            for (int group = 0; group < _widths.Count; group++)
+            {
+                float width = _widths[group];
 
-            AddBlitPass(renderGraph, "SilhouetteOutline_Merge", blurA, cameraColor, PASS_MERGE, default);
+                TextureHandle mask = CreateMask(renderGraph, colorDesc, "SilhouetteOutline_Mask");
+                TextureHandle blurA = CreateTexture(renderGraph, colorDesc, "SilhouetteOutline_BlurA");
+                TextureHandle blurB = CreateTexture(renderGraph, colorDesc, "SilhouetteOutline_BlurB");
+
+                TextureHandle depthMask = TextureHandle.nullHandle;
+                TextureHandle depthA = TextureHandle.nullHandle;
+                TextureHandle depthB = TextureHandle.nullHandle;
+                if (occlude)
+                {
+                    depthMask = CreateSilhouetteDepth(renderGraph, silhouetteDepthDesc, "SilhouetteOutline_DepthMask");
+                    depthA = CreateTexture(renderGraph, silhouetteDepthDesc, "SilhouetteOutline_DepthA");
+                    depthB = CreateTexture(renderGraph, silhouetteDepthDesc, "SilhouetteOutline_DepthB");
+                }
+
+                AddSilhouettePass(renderGraph, _groups[group], mask, depthMask, depth);
+
+                AddBlitPass(renderGraph, "SilhouetteOutline_BlurVertical", mask, blurA, PASS_BLUR_VERTICAL,
+                    new BlitTargets { Depth = depthMask, DepthDestination = depthA, KernelSize = width });
+
+                AddBlitPass(renderGraph, "SilhouetteOutline_BlurHorizontal", blurA, blurB, PASS_BLUR_HORIZONTAL,
+                    new BlitTargets { Depth = depthA, DepthDestination = depthB, KernelSize = width });
+
+                AddBlitPass(renderGraph, "SilhouetteOutline_Cut", blurB, blurA, PASS_CUT,
+                    new BlitTargets
+                    {
+                        Mask = sharedMask.IsValid() ? sharedMask : mask,
+                        Depth = depthB,
+                        SceneDepth = occlude ? sceneDepth : TextureHandle.nullHandle,
+                    });
+
+                AddBlitPass(renderGraph, "SilhouetteOutline_Merge", blurA, cameraColor, PASS_MERGE, default);
+            }
+        }
+
+        private static TextureHandle CreateTexture(RenderGraph renderGraph, TextureDesc desc, string name)
+        {
+            desc.name = name;
+            desc.clearBuffer = false;
+            return renderGraph.CreateTexture(desc);
+        }
+
+        private static TextureHandle CreateMask(RenderGraph renderGraph, TextureDesc desc, string name)
+        {
+            desc.name = name;
+            desc.clearBuffer = true;
+            desc.clearColor = Color.clear;
+            return renderGraph.CreateTexture(desc);
+        }
+
+        // Raw device depth of the silhouettes, cleared to the far plane where there is none.
+        private static TextureHandle CreateSilhouetteDepth(RenderGraph renderGraph, TextureDesc desc, string name)
+        {
+            float far = SystemInfo.usesReversedZBuffer ? 0f : 1f;
+
+            desc.name = name;
+            desc.clearBuffer = true;
+            desc.clearColor = new Color(far, far, far, far);
+            return renderGraph.CreateTexture(desc);
         }
 
         private bool CollectBatches()
         {
-            _batches.Clear();
+            foreach (List<DrawBatch> group in _groups)
+            {
+                group.Clear();
+            }
+
+            _widths.Clear();
+            _allBatches.Clear();
             _colors.Clear();
 
             foreach (OutlineInstruction instruction in OutlineManager.PersistentInstructions)
@@ -207,26 +249,27 @@ namespace SilhouetteOutline
                 AddInstruction(instruction);
             }
 
-            foreach (OutlineTarget target in OutlineManager.Targets)
+            foreach (URPOutline outline in OutlineManager.Targets)
             {
-                if (target == null) continue;
+                if (outline == null) continue;
 
                 int colorOffset = -1;
-                foreach (OutlineTarget.Entry entry in target.Entries)
+                foreach (URPOutline.Entry entry in outline.Entries)
                 {
                     if (!entry.IsDrawable || entry.Mesh == null) continue;
 
                     if (colorOffset < 0)
                     {
                         colorOffset = _colors.Count;
-                        _colors.Add(target.Color);
+                        _colors.Add(outline.Color);
                     }
 
-                    _batches.Add(new DrawBatch { Mesh = entry.Mesh, Renderer = entry.Renderer, ColorOffset = colorOffset });
+                    AddBatch(OutlineInstruction.ResolveWidth(outline.Width),
+                        new DrawBatch { Mesh = entry.Mesh, Renderer = entry.Renderer, ColorOffset = colorOffset });
                 }
             }
 
-            return _batches.Count > 0;
+            return _allBatches.Count > 0;
         }
 
         private void AddInstruction(OutlineInstruction instruction)
@@ -239,7 +282,22 @@ namespace SilhouetteOutline
                 _colors.Add(instruction.GetColor(i));
             }
 
-            _batches.Add(new DrawBatch { Mesh = instruction.Mesh, Matrices = instruction.Matrices, ColorOffset = colorOffset });
+            AddBatch(instruction.ResolvedWidth,
+                new DrawBatch { Mesh = instruction.Mesh, Matrices = instruction.Matrices, ColorOffset = colorOffset });
+        }
+
+        private void AddBatch(float width, DrawBatch batch)
+        {
+            int group = _widths.IndexOf(width);
+            if (group < 0)
+            {
+                group = _widths.Count;
+                _widths.Add(width);
+                if (_groups.Count <= group) _groups.Add(new List<DrawBatch>(16));
+            }
+
+            _groups[group].Add(batch);
+            _allBatches.Add(batch);
         }
 
         // Every camera of a frame collects the same data, so overwriting the buffer between cameras is harmless.
@@ -269,11 +327,11 @@ namespace SilhouetteOutline
             }
         }
 
-        private void AddSilhouettePass(RenderGraph renderGraph, TextureHandle mask, TextureHandle depthMask, TextureHandle depth)
+        private void AddSilhouettePass(RenderGraph renderGraph, List<DrawBatch> batches, TextureHandle mask, TextureHandle depthMask, TextureHandle depth)
         {
             using (var builder = renderGraph.AddRasterRenderPass("SilhouetteOutline_Silhouette", out SilhouettePassData passData))
             {
-                passData.Batches = _batches;
+                passData.Batches = batches;
                 passData.Material = _silhouetteMaterial;
                 passData.Colors = _colorBuffer;
                 passData.Scratch = _scratch;
@@ -297,22 +355,23 @@ namespace SilhouetteOutline
                 passData.Mask = targets.Mask;
                 passData.Depth = targets.Depth;
                 passData.SceneDepth = targets.SceneDepth;
+                passData.KernelSize = targets.KernelSize;
                 passData.Material = _compositeMaterial;
                 passData.Pass = pass;
 
                 builder.UseTexture(source);
-                bool setsGlobals = false;
-                if (passData.Mask.IsValid()) { builder.UseTexture(passData.Mask); setsGlobals = true; }
-                if (passData.Depth.IsValid()) { builder.UseTexture(passData.Depth); setsGlobals = true; }
-                if (passData.SceneDepth.IsValid()) { builder.UseTexture(passData.SceneDepth); setsGlobals = true; }
-                builder.AllowGlobalStateModification(setsGlobals);
+                if (passData.Mask.IsValid()) builder.UseTexture(passData.Mask);
+                if (passData.Depth.IsValid()) builder.UseTexture(passData.Depth);
+                if (passData.SceneDepth.IsValid()) builder.UseTexture(passData.SceneDepth);
+                builder.AllowGlobalStateModification(true);
 
                 builder.SetRenderAttachment(destination, 0, AccessFlags.Write);
                 if (targets.DepthDestination.IsValid()) builder.SetRenderAttachment(targets.DepthDestination, 1, AccessFlags.Write);
 
                 builder.SetRenderFunc(static (BlitPassData data, RasterGraphContext context) =>
                 {
-                    // Set through the command buffer, not the material, so each camera and eye keeps its own textures.
+                    // Set through the command buffer, not the material, so each group, camera and eye keeps its own values.
+                    if (data.KernelSize > 0f) context.cmd.SetGlobalFloat(KernelSizeId, data.KernelSize);
                     if (data.Mask.IsValid()) context.cmd.SetGlobalTexture(MaskId, data.Mask);
                     if (data.Depth.IsValid()) context.cmd.SetGlobalTexture(DepthId, data.Depth);
                     if (data.SceneDepth.IsValid()) context.cmd.SetGlobalTexture(SceneDepthId, data.SceneDepth);

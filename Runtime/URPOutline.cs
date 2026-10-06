@@ -6,11 +6,12 @@ namespace SilhouetteOutline
 {
     /// <summary>
     /// Outlines the mesh and skinned mesh renderers of this GameObject (and its children) while enabled.
+    /// Needs the Silhouette Outline Renderer Feature on the URP renderer.
     /// </summary>
     [ExecuteAlways]
     [DisallowMultipleComponent]
-    [AddComponentMenu("Rendering/Silhouette Outline Target")]
-    public sealed class OutlineTarget : MonoBehaviour
+    [AddComponentMenu("Rendering/URP Outline")]
+    public sealed class URPOutline : MonoBehaviour
     {
         internal struct Entry
         {
@@ -30,6 +31,10 @@ namespace SilhouetteOutline
 
         [SerializeField] private Color _color = Color.white;
 
+        [Tooltip("Outline width in pixels. Each distinct width in view adds one blur chain.")]
+        [Range(OutlineInstruction.MIN_WIDTH, OutlineInstruction.MAX_WIDTH)]
+        [SerializeField] private float _width = OutlineInstruction.DEFAULT_WIDTH;
+
         [Tooltip("Also outline the renderers of the children. Call RefreshRenderers after changing the hierarchy at runtime.")]
         [SerializeField] private bool _includeChildren = true;
 
@@ -39,6 +44,12 @@ namespace SilhouetteOutline
         {
             get => _color;
             set => _color = value;
+        }
+
+        public float Width
+        {
+            get => _width;
+            set => _width = Mathf.Clamp(value, OutlineInstruction.MIN_WIDTH, OutlineInstruction.MAX_WIDTH);
         }
 
         public bool IncludeChildren

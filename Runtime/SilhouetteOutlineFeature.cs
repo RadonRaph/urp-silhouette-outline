@@ -20,9 +20,6 @@ namespace SilhouetteOutline
         {
             public RenderPassEvent RenderPassEvent = RenderPassEvent.BeforeRenderingPostProcessing;
 
-            [Tooltip("Blur radius in pixels of the render target. Drives the outline thickness.")]
-            [Range(1f, 32f)] public float BlurRange = 4f;
-
             [Tooltip("Depth bias of the silhouettes, so they pass the LEqual test against the copied scene depth.")]
             public float DepthBias = -1f;
 
@@ -53,8 +50,15 @@ namespace SilhouetteOutline
         {
             ReleaseResources();
 
-            if (_silhouetteShader == null) _silhouetteShader = Shader.Find(SILHOUETTE_SHADER);
-            if (_compositeShader == null) _compositeShader = Shader.Find(COMPOSITE_SHADER);
+            if (_silhouetteShader == null || _compositeShader == null)
+            {
+                _silhouetteShader = Shader.Find(SILHOUETTE_SHADER);
+                _compositeShader = Shader.Find(COMPOSITE_SHADER);
+#if UNITY_EDITOR
+                // Saves the references in the renderer asset so the shaders ship in builds.
+                UnityEditor.EditorUtility.SetDirty(this);
+#endif
+            }
 
             if (_silhouetteShader == null || _compositeShader == null)
             {

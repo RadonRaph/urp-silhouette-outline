@@ -5,13 +5,13 @@ namespace SilhouetteOutline
 {
     /// <summary>
     /// Registry of everything the outline pass draws: persistent instructions, per-frame instructions and
-    /// <see cref="OutlineTarget"/> components.
+    /// <see cref="URPOutline"/> components.
     /// </summary>
     public static class OutlineManager
     {
         private static readonly Dictionary<int, OutlineInstruction> s_Persistent = new Dictionary<int, OutlineInstruction>();
         private static readonly List<OutlineInstruction> s_Frame = new List<OutlineInstruction>();
-        private static readonly List<OutlineTarget> s_Targets = new List<OutlineTarget>();
+        private static readonly List<URPOutline> s_Targets = new List<URPOutline>();
 
         private static int s_NextHandle = 1;
         private static int s_FrameIndex = -1;
@@ -88,12 +88,12 @@ namespace SilhouetteOutline
             FrameInstructions.AddRange(instructions);
         }
 
-        internal static void Register(OutlineTarget target)
+        internal static void Register(URPOutline target)
         {
             if (!s_Targets.Contains(target)) s_Targets.Add(target);
         }
 
-        internal static void Unregister(OutlineTarget target)
+        internal static void Unregister(URPOutline target)
         {
             s_Targets.Remove(target);
         }
@@ -102,7 +102,7 @@ namespace SilhouetteOutline
 
         internal static Dictionary<int, OutlineInstruction>.ValueCollection PersistentInstructions => s_Persistent.Values;
 
-        internal static List<OutlineTarget> Targets => s_Targets;
+        internal static List<URPOutline> Targets => s_Targets;
 
         // Frame instructions live until the frame count changes, so every camera of the frame (both eyes included) sees them.
         internal static List<OutlineInstruction> FrameInstructions

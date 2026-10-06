@@ -23,15 +23,17 @@ Package Manager > `+` > *Install package from git URL*:
 https://github.com/RadonRaph/urp-silhouette-outline.git
 ```
 
-Then add the **Silhouette Outline** Renderer Feature to your Universal Renderer Data.
-
 ## Usage
 
-Add an `OutlineTarget` component to a GameObject. Its `MeshRenderer` and `SkinnedMeshRenderer` (children included) are outlined while the component is enabled.
+1. Add the **Silhouette Outline** Renderer Feature to your Universal Renderer Data.
+2. Add the **URP Outline** component to a GameObject, set its color and width.
+
+Its `MeshRenderer` and `SkinnedMeshRenderer` (children included) are outlined while the component is enabled.
 
 ```csharp
-var target = go.AddComponent<OutlineTarget>();
-target.Color = Color.yellow;
+var outline = go.AddComponent<URPOutline>();
+outline.Color = Color.yellow;
+outline.Width = 6f;
 ```
 
 Call `RefreshRenderers()` after changing the hierarchy at runtime. With a `LODGroup`, only LOD 0 is outlined.
@@ -42,7 +44,7 @@ Or draw meshes directly:
 using SilhouetteOutline;
 
 // Persistent
-int handle = OutlineManager.AddInstruction(new OutlineInstruction(mesh, matrix, Color.cyan));
+int handle = OutlineManager.AddInstruction(new OutlineInstruction(mesh, matrix, Color.cyan, width: 4f));
 OutlineManager.UpdateInstruction(handle, new OutlineInstruction(mesh, newMatrix, Color.cyan));
 OutlineManager.RemoveInstruction(handle);
 
@@ -55,13 +57,14 @@ OutlineManager.AddFrameInstruction(new OutlineInstruction(mesh, matrices, colors
 | Setting | Description |
 | --- | --- |
 | Render Pass Event | Default `BeforeRenderingPostProcessing`. |
-| Blur Range | Outline thickness, in pixels. |
 | Depth Bias / Slope Depth Bias | Slack for the silhouette depth test. |
 | Occlude Outline | Hide the outline where the scene is in front of the object. Costs extra texture reads and three R32F targets. |
 | Occlusion Tolerance | How far (world units) the scene can be in front before the outline fades. Keeps contact edges visible. |
+
+Width is in pixels. Each distinct width on screen runs its own blur chain, so stick to a few values.
 
 ## XR
 
 Supports single pass instanced, multiview and multi pass. Not yet tested on device.
 
-Blur Range is in pixels, so headsets usually need a higher value.
+Width is in pixels, so headsets usually need a higher value.
