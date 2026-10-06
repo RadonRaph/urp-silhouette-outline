@@ -1,0 +1,12 @@
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vs/
+.vscode/
+*.swp
+
+# Unity files that only exist when the folder is opened inside a project
+*.csproj
+*.sln
+*.slnx

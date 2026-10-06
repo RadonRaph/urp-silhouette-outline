@@ -1,0 +1,20 @@
+{
+    "name": "com.radonraph.silhouette-outline",
+    "version": "1.0.0",
+    "displayName": "Silhouette Outline",
+    "description": "Blurred silhouette outline for URP, depth tested against the scene. Render Graph and XR (single pass instanced / multiview) compatible.",
+    "unity": "6000.3",
+    "dependencies": {
+        "com.unity.render-pipelines.universal": "17.3.0"
+    },
+    "keywords": [
+        "outline",
+        "urp",
+        "xr"
+    ],
+    "author": {
+        "name": "RadonRaph",
+        "url": "https://github.com/RadonRaph"
+    },
+    "documentationUrl": "https://github.com/RadonRaph/urp-silhouette-outline#readme"
+}
