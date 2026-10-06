@@ -50,7 +50,7 @@ Shader "Hidden/SilhouetteOutline/Silhouette"
 
                 // With single pass instanced XR the eye is folded into the instance id, unity_InstanceID is already divided back.
                 uint instance = 0;
-                #if defined(UNITY_ANY_INSTANCING_ENABLED)
+                #if UNITY_ANY_INSTANCING_ENABLED
                     instance = unity_InstanceID;
                 #endif
                 output.colorIndex = (uint)_SilhouetteOutlineColorOffset + instance;
